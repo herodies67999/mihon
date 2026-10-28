@@ -1,0 +1,83 @@
+name: KuramiX v0.2 ARM64
+
+on:
+  push:
+    branches: [kuramix/development]
+    paths: ['.github/workflows/kuramix-v02-arm64.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version-file: .github/.java-version
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Apply KuramiX v0.2 ARM64 identity and initial UI palette
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          def edit(path, fn):
+              p=Path(path); original=p.read_text(encoding="utf-8"); updated=fn(original)
+              if updated==original: print("Already configured:",path)
+              else: p.write_text(updated,encoding="utf-8"); print("Updated:",path)
+          def identity(s):
+              s=s.replace('applicationId = "app.mihon"','applicationId = "app.kuramix"')
+              s=re.sub(r'versionCode = \d+', 'versionCode = 40', s, count=1)
+              s=re.sub(r'versionName = "[^"]+"','versionName = "0.2.0"',s,count=1)
+              s=s.replace('buildConfigField("boolean", "UPDATER_ENABLED", "${Config.enableUpdater}")','buildConfigField("boolean", "UPDATER_ENABLED", "false")')
+              # Only package arm64 native libraries, no 32-bit or x86 variants.
+              if 'abiFilters += "arm64-v8a"' not in s:
+                  marker='    defaultConfig {'
+                  assert s.count(marker)==1
+                  s=s.replace(marker,marker+'\n        ndk { abiFilters += "arm64-v8a" }',1)
+              return s
+          edit('app/build.gradle.kts',identity)
+          edit('i18n/src/commonMain/moko-resources/base/strings.xml',
+               lambda s:s.replace('<string name="app_name" translatable="false">Mihon</string>','<string name="app_name" translatable="false">KuramiX</string>'))
+          # Original KuramiX palette, inspired by ShonenX's dark, media-first visual direction;
+          # preserves Mihon's native Compose UI, reader and extension implementation.
+          palette='app/src/main/java/eu/kanade/presentation/theme/colorscheme/TachiyomiColorScheme.kt'
+          def theme(s):
+              mapping={
+                '0xFFB0C6FF':'0xFFDFB8FF','0xFF002D6E':'0xFF32134C',
+                '0xFF00429B':'0xFF51316D','0xFFD9E2FF':'0xFFF3DCFF',
+                '0xFF0058CA':'0xFF8651AD','0xFF1B1B1F':'0xFF101017',
+                '0xFFE3E2E6':'0xFFF1EDF5','0xFF211F26':'0xFF211A2A',
+                '0xFF1A181D':'0xFF0C0B12','0xFF1E1C22':'0xFF17131E',
+                '0xFF292730':'0xFF30243B','0xFF302E38':'0xFF3A2B47',
+                '0xFFFEFBFF':'0xFFFFF9FF','0xFFF3EDF7':'0xFFF4EBF7'
+              }
+              for a,b in mapping.items(): s=s.replace(a,b)
+              return s
+          edit(palette,theme)
+          PY
+      - name: Build arm64-only debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+      - name: Verify APK architecture
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob,zipfile
+          files=glob.glob('app/build/outputs/apk/debug/*.apk')
+          assert len(files)==1,files
+          with zipfile.ZipFile(files[0]) as z:
+              abis={n.split('/')[1] for n in z.namelist() if n.startswith('lib/') and n.endswith('.so')}
+          print('Native ABIs:',abis)
+          assert not abis or abis=={'arm64-v8a'},f'Unexpected ABIs: {abis}'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KuramiX-v0.2.0-arm64-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
